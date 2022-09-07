@@ -1,0 +1,354 @@
+---
+title: "Final Project 1361"
+output: pdf_document
+---
+
+```{r, warning=FALSE,message=FALSE}
+library(tidyverse)
+library(glmnet)
+library(gam)
+library(boot)
+library(leaps)
+library(randomForest)
+library(caret)
+```
+
+**Read in Data**
+```{r}
+raw_data = read_csv("~/Documents/STAT1361/train.csv")
+```
+
+**Data Wrangling**
+```{r}
+#Separate the date variable into three separate variables because I want to see if individually they are significant
+out.data = raw_data %>%
+  separate(Date, sep="/", into = c("Day", "Month", "Year"))
+```
+
+```{r}
+summary(out.data$Count)
+```
+
+```{r}
+#Create percentiles to extract outliers in the data with extreme count values
+lower_bound = quantile(out.data$Count, 0.01)
+upper_bound = quantile(out.data$Count, 0.99)
+
+outliers.ind = which(out.data$Count < lower_bound | out.data$Count > upper_bound)
+
+out.data[outliers.ind, ]
+```
+```{r}
+#Explore the outliers and look for trends that may help explain the extreme values
+range(out.data[outliers.ind, ]$Temperature)
+range(out.data[outliers.ind, ]$Humidity)
+range(out.data[outliers.ind, ]$Hour)
+mean(out.data[outliers.ind, ]$Temperature)
+mean(out.data[outliers.ind, ]$Humidity)
+```
+
+
+```{r}
+#Remove the outliers from the dataset
+data = out.data[-outliers.ind, ]
+```
+
+**Colinearity**
+```{r}
+#Explore the strong colinearity between dew point temperature and temperature as they are both measuring similar factors
+plot(data$Dew, data$Temperature)
+```
+**Relationship Analysis**
+```{r}
+plot(data$Temperature, data$Count)
+plot(data$Rainfall, data$Count)
+plot(data$Hour, data$Count)
+plot(data$Month, data$Count)
+```
+
+```{r}
+#Explore the functioning variable and see that it has a very strong affect on bike rental count therfore it must be  included in the model
+plot(as.factor(data$Functioning), data$Count)
+```
+
+
+```{r}
+#Extra plots of some of the categorical variables
+plot(as.factor(data$Holiday), data$Count)
+plot(as.factor(data$Seasons), data$Count)
+```
+**Split Data**
+```{r}
+#Splitting the data into training and testing dataset with the training set containing 75% of the data and the testing set 25%
+set.seed(21)
+sampleSize = floor(0.75 * nrow(data))
+split = sample(seq_len(nrow(data)), size = sampleSize)
+train = data[split, ]
+test = data[-split, ]
+```
+
+**Linear Model**
+```{r}
+#Test all of the variables in the dataset and see which ones standout 
+lin.fit.test = lm(Count~Hour+Temperature+Humidity+Wind+Visibility+Dew+Solar+Rainfall+Snowfall+Holiday+Month+Year+Day+Functioning, data = train)
+summary(lin.fit.test)
+```
+
+```{r}
+#The final linear model chosen to represent the data
+lin.fit = lm(Count~Hour+Temperature+Humidity+Visibility+Solar+Rainfall+Snowfall+Holiday+Month+Day+Functioning, data = train)
+summary(lin.fit)
+```
+
+
+```{r}
+lin.pred = predict(lin.fit, test, type = 'response')
+mean((lin.pred - test$Count)^2)
+```
+
+**Ridge**
+```{r}
+#In order to do ridge regression and lasso we must first convert the data into matrices and vectors
+train.x = model.matrix(Count~Hour+Temperature+Humidity+Visibility+Solar+Rainfall+Snowfall+Holiday+Month+Day+Functioning, data = train)
+train.count = train$Count
+test.x = model.matrix(Count~Hour+Temperature+Humidity+Visibility+Solar+Rainfall+Snowfall+Holiday+Month+Day+Functioning, data = test)
+test.count = test$Count
+
+ridge.fit = cv.glmnet(train.x, train.count, alpha = 0)
+ridge.lambda = ridge.fit$lambda.min
+
+ridge.pred = predict(ridge.fit, s = ridge.lambda, newx = test.x)
+mean((ridge.pred - test.count)^2)
+```
+
+*Coefficients*
+```{r}
+#Examine the coefficient values of ridge regession and see where the model is weighted most heavily
+ridge.coef = predict(ridge.fit, type = "coefficients", s = ridge.lambda)
+ridge.coef
+```
+
+
+**Lasso**
+```{r}
+lasso.fit = cv.glmnet(train.x, train.count, alpha = 1)
+lasso.lambda = lasso.fit$lambda.min
+
+lasso.pred = predict(lasso.fit, s = lasso.lambda, newx = test.x)
+mean((lasso.pred - test.count)^2)
+```
+
+*Coefficients*
+```{r}
+lasso.coef = predict(lasso.fit, type = "coefficients", s = lasso.lambda)
+lasso.coef
+```
+
+**Relaxed Lasso**
+```{r}
+relax.fit = glmnet(train.x, train.count, relax = TRUE)
+relax.lambda = relax.fit$lambda.min
+relax.pred = predict(relax.fit, test.x, s = relax.lambda)
+mean((relax.pred - test.count)^2)
+```
+
+
+
+**Non-Linear Methods**
+```{r}
+#Examine some of the variables in differing degrees of non-linear polynomial functions
+fit = lm(Count~ poly(Hour,5)+poly(Temperature,5)+poly(Humidity,5)+poly(Visibility,5)+poly(Solar,5)+poly(Rainfall,5)+Holiday+Month+Day+Functioning, data = train)
+summary(fit)
+```
+
+```{r}
+#Compare the different functions  on each variable and see which produces the most reliable model
+anova1 = gam(Count~Hour+Temperature+Humidity+Visibility+Solar+Rainfall+Holiday+Month+Day+Functioning, data = train)
+anova2 = gam(Count~ Hour+s(Temperature,3)+s(Humidity,2)+s(Visibility,2)+s(Solar,3)+Rainfall+Holiday+Month+Day+Functioning, data = train)
+anova3 = gam(Count~ Hour+Temperature+s(Humidity,3)+s(Visibility,2)+s(Solar,3)+s(Rainfall,3)+Holiday+Month+Day+Functioning, data = train)
+anova4  = gam(Count~ s(Hour,5)+s(Temperature,5)+s(Humidity,4)+s(Solar,4)+s(Rainfall,5)+Holiday+Month+Day+Functioning, data = train)
+anova(anova1, anova2, anova3, anova4, test = 'F')
+```
+
+```{r}
+model = glm(Count~ s(Hour,5)+s(Temperature,5)+s(Humidity,4)+s(Solar,4)+s(Rainfall,5)+Holiday+Month+Day+Functioning, data = train)
+cv.glm(train, model, K = 10)$delta[1]
+```
+
+**GAM**
+```{r, warning=FALSE}
+gam.mod = gam(Count~ s(Hour,5)+s(Temperature,5)+s(Humidity,4)+s(Visibility,4)+s(Solar,4)+s(Rainfall,5)+Holiday+Month+Day+Functioning, data = train)
+par(mfrow = c(2,3))
+plot(gam.mod, se = TRUE, col = 'blue')
+```
+```{r}
+summary(gam.mod)
+```
+
+
+```{r}
+#Output the R^2 and the MSE
+preds = predict(gam.mod, test)
+RSS = sum((test$Count - preds)^2)
+TSS = sum((test$Count - mean(test$Count)) ^ 2)
+1 - (RSS / TSS) 
+mean((test$Count - preds)^2)
+```
+
+**K-Nearest Neighbors**
+
+```{r}
+set.seed(21)
+knn.model = knnreg(train.x, train.count)
+knn.pred = predict(knn.model, data.frame(test.x))
+mean((test$Count - knn.pred)^2)
+```
+
+
+**Random Forests**
+
+*Bagging*
+```{r}
+bag.fit = randomForest(Count~Hour+Temperature+Humidity+Visibility+Dew+Wind+Snowfall+Solar+Rainfall+Holiday+Month+Day+Functioning, data = train, ntree=50, mtry=10, importance = TRUE)
+bag.pred = predict(bag.fit, test)
+mean((test$Count - bag.pred)^2)
+```
+
+```{r}
+#Output the variable importance in the bagged random forest model
+importance(bag.fit)
+```
+
+
+*RF*
+```{r}
+rf.fit = randomForest(Count~Hour+Temperature+Humidity+Visibility+Dew+Wind+Snowfall+Solar+Rainfall+Holiday+Month+Day+Functioning, data = train, ntree=50, importance = TRUE)
+rf.pred = predict(rf.fit, test)
+mean((test$Count - rf.pred)^2)
+```
+
+```{r}
+importance(rf.fit)
+```
+
+```{r}
+#Examine how random forest performs with different values of the tuning parameter mtry and see which value produces the minimum testing error 
+oob.err = double(10)
+test.err = double(10)
+for(mtry in 1:10)
+{
+  rf.count = randomForest(Count~Hour+Temperature+Humidity+Dew+Wind+Snowfall+Solar+Rainfall+Holiday+Month+Day+Functioning, data = train, mtry = mtry, ntree=50, importance = TRUE)
+  oob.err[mtry]=rf.count$mse[50]
+  rf.pred = predict(rf.count, test)
+  test.err[mtry] = mean((test$Count - rf.pred)^2)
+}
+```
+
+```{r}
+#Graph the output of the Out-of-Bag error and testing error for each value of mtry
+matplot(1:mtry, cbind(test.err, oob.err), pch=19, col=c("green","blue"), type="b", xlab="mtry", ylab="Mean Squared Error")
+```
+```{r}
+test.err[7]
+```
+
+
+**Baseline Test**
+```{r}
+sample_mean = mean(out.data$Count)
+mean((test$Count - sample_mean)^2)
+```
+
+**Bagged Estimates**
+```{r}
+#For each of the models selected create new testing data to see how the model performs on average 
+bag_lin_mse = double(100)
+for(i in 1:100)
+{
+  set.seed(i)
+  sampleSize = floor(0.75 * nrow(data))
+  split = sample(seq_len(nrow(data)), size = sampleSize)
+  new_train = data[split, ]
+  new_test = data[-split, ]
+  lin.fit = lm(Count~Hour+Temperature+Humidity+Visibility+Solar+Rainfall+Holiday+Month+Day+Functioning, data = train)
+  lin.pred = predict(lin.fit, new_test, type = 'response')
+  bag_lin_mse[i] = mean((lin.pred - new_test$Count)^2)
+}
+avg = mean(bag_lin_mse)
+avg
+```
+
+```{r}
+bag_lasso_mse = double(100)
+for(i in 1:100)
+{
+  set.seed(i)
+  sampleSize = floor(0.75 * nrow(data))
+  split = sample(seq_len(nrow(data)), size = sampleSize)
+  new_train = data[split, ]
+  new_test = data[-split, ]
+  train.x = model.matrix(Count~Hour+Temperature+Humidity+Visibility+Solar+Rainfall+Holiday+Month+Day+Functioning, data = train)
+  train.apps = train$Count
+  test.x = model.matrix(Count~Hour+Temperature+Humidity+Visibility+Solar+Rainfall+Holiday+Month+Day+Functioning, data = new_test)
+  test.apps = new_test$Count
+  lasso.fit = cv.glmnet(train.x, train.apps, alpha = 1)
+  lasso.lambda = lasso.fit$lambda.min
+  lasso.pred = predict(lasso.fit, s = lasso.lambda, newx = test.x)
+  bag_lasso_mse[i] = mean((lasso.pred - test.apps)^2)
+}
+avg = mean(bag_lasso_mse)
+avg
+```
+
+```{r}
+bag_rf_mse = double(100)
+for(i in 1:100)
+{
+  set.seed(i)
+  sampleSize = floor(0.75 * nrow(data))
+  split = sample(seq_len(nrow(data)), size = sampleSize)
+  new_train = data[split, ]
+  new_test = data[-split, ]
+  rf.fit = randomForest(Count~Hour+Temperature+Humidity+Visibility+Dew+Wind+Snowfall+Solar+Rainfall+Holiday+Month+Day+Functioning, data = train, mtry = 5, ntree=50, importance = TRUE)
+  rf.pred = predict(rf.fit, new_test)
+  bag_rf_mse[i] = mean((new_test$Count - rf.pred)^2)
+}
+avg = mean(bag_rf_mse)
+avg
+```
+
+```{r}
+bag_gam_mse = double(100)
+for(i in 1:100)
+{
+  set.seed(i)
+  sampleSize = floor(0.75 * nrow(data))
+  split = sample(seq_len(nrow(data)), size = sampleSize)
+  new_train = data[split, ]
+  new_test = data[-split, ]
+  gam.mod = gam(Count~ s(Hour,5)+s(Temperature,5)+s(Humidity,4)+s(Visibility,4)+s(Solar,4)+s(Rainfall,5)+Holiday+Month+Day+Functioning, data = train)
+  preds = predict(gam.mod, new_test)
+  bag_gam_mse[i] = mean((new_test$Count - preds)^2)
+}
+avg = mean(bag_gam_mse)
+avg
+```
+
+**Test Predictions**
+```{r}
+#Read and convert the data into the proper variable format
+test_data = read_csv("~/Documents/STAT1361/test.csv")
+test_data = test_data %>%
+  separate(Date, sep="/", into = c("Day", "Month", "Year"))
+```
+```{r}
+Count = predict(rf.fit, test_data)
+ID = test_data$ID
+student_id = rep(4293570, length(Count))
+test.pred = data.frame(ID, Count, student_id)
+```
+
+```{r}
+write.csv(test.pred, "C:\\Users\\Daniel\\Documents\\STAT1361\\testing_predictions_4293570.csv", row.names = FALSE)
+```
+
